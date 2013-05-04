@@ -1,11 +1,17 @@
 import EasyDialogs
 import io
 import re
+from itertools import chain
 
 pattI=re.compile(r"^(-?\d+ )+\t*}$")
 dataI=re.compile(r"(-?\d+)")
-pattF=re.compile(r"^\t*(-?[\d]+.[\d]+ )+\t*$")
-dataF=re.compile(r"(-?[\d]+.[\d]+)")
+pattI2=re.compile(r"^(-?\d+ *)+$")
+dataI2=re.compile(r"(-?\d+)")
+pattF=re.compile(r"^\t*(-?[\d]+\.[\d]+ )+\t*$")
+dataF=re.compile(r"(-?[\d]+\.[\d]+)")
+# ^\s*\w+=([.\w]+|"[.\w]*")$
+
+month_days=[0,31,28,31,30,31,30,31,31,30,31,30,31]
 
 def tick(line):
     tick.count+=1
@@ -24,7 +30,7 @@ def noparse(a):
             noparse(a)
 #    parse.depth-=1
 
-ignoreThese=['ai', 'army', 'history', 'levy', 'liege_troops', 'owner_troops', 'liege_ships', 'owner_ships', 'controller']
+ignoreThese=[]#['army']
 
 def parse(a):
     parse.depth+=1 ##
@@ -41,10 +47,48 @@ def parse(a):
     else:
         tokens=line.split('=')
     if len(tokens)==2:
+        if tokens[1]=='{':
+            tokens[1]=''
+            line='{'
         if tokens[1]!='':
-            if tokens[0] in ignoreThese:
-                return ['ignore', tokens[0]]
+#            if tokens[0] in ignoreThese:
+#                return ['ignore', tokens[0]]
             tokens[1]=tokens[1].strip('"')
+            q=None
+#            if tokens[0]==u'decadence' and tokens[1]==u'0.00000':
+#                print '1>>>',q
+            try:
+                q=int(tokens[1])
+            except:
+                pass
+#            if tokens[0]==u'decadence' and tokens[1]==u'0.00000':
+#                print '2>>>',q
+            if q==None:
+                try:
+                    q=float(tokens[1])
+                except:
+                    pass
+            if tokens[0]==u'decadence' and tokens[1]==u'0.00000':
+#                print '3>>>',type(q),q
+                if q!=0.0:
+                    print tokens
+                assert q==0.0,'fail'
+            if q==None:
+                try:
+                    r=tokens[1].split('.')
+                    assert len(r)==3, '3 elem'
+                    r=[int(x) for x in r]
+                    assert 0<r[0]<2000, 'year'
+                    assert 0<r[1]<13, 'month'
+                    assert 0<r[2]<=month_days[r[1]], 'day'
+                    q=r
+                except:
+                    pass
+#            if tokens[0]==u'decadence' and tokens[1]==u'0.00000':
+#                print '4>>>',q
+#                assert False
+            if q!=None:
+                tokens[1]=q
             return tokens # tokens == key, value
         else:
             # tokens == key, ''; start a dict
@@ -53,25 +97,26 @@ def parse(a):
                 tick(line) ##
                 assert line=='{', 'Expected {, got: %s' % line
                     # error
-            if tokens[0] in ignoreThese:
-                noparse(a)
-#                if tick.count>534000:#
-#                    print '[ignore]', tokens[0]#
-                return ['ignore', tokens[0]]
+#            if tokens[0] in ignoreThese:
+#                noparse(a)
+##                if tick.count>534000:#
+##                    print '[ignore]', tokens[0]#
+#                return ['ignore', tokens[0]]
             temp=dict()
             while True:
                 x=parse(a)
-#                print tokens
                 parse.depth-=1 ##
+#                print parse.depth, tokens
                 if x=='':
                     continue
                 if x=='}':
+#                    print parse.depth, tokens
                     return [tokens[0], temp]
-                if x[0]=='ignore':
-                    if x[0] not in temp:
-                        temp[x[0]]=set()
-                    temp[x[0]].add(x[1])
-                    continue
+#                if x[0]=='ignore':
+#                    if x[0] not in temp:
+#                        temp[x[0]]=set()
+#                    temp[x[0]].add(x[1])
+#                    continue
                 if x[0]=='_i':
                     return [tokens[0], x[1]]
                 if x[0]=='_f':
@@ -88,21 +133,17 @@ def parse(a):
                 else: # add pair to temp
                     temp[x[0]]=x[1]
     elif pattI.match(tokens[0]): # string of ints and }
-        temp=[u'_i', dataI.findall(tokens[0])]
+        temp=[u'_i', [int(x) for x in dataI.findall(tokens[0])]]
+        return temp
+    elif pattI2.match(tokens[0]): # string of ints
+        temp=[u'_i', [int(x) for x in dataI2.findall(tokens[0])]]
+        line=a.next().strip() # eat {
+        assert line=='}', 'Expected }, got: %s' % line
         return temp
     elif pattF.match(tokens[0]+' '): # string of ints and }
-        temp=[u'_f', dataF.findall(tokens[0])]
+        temp=[u'_f', [float(x) for x in dataF.findall(tokens[0])]]
         return temp
 
-    print line
-    line=a.next().strip()
-    print line
-    line=a.next().strip()
-    print line
-    line=a.next().strip()
-    print line
-    line=a.next().strip()
-    print line
     assert False, 'Bad line: $%s$' % line
         #error
 
@@ -110,23 +151,170 @@ parse.depth=0 ##
 
 #readName=EasyDialogs.AskFileForOpen(wanted=str)
 readName='/Users/jerrybarrington/Documents/Paradox Interactive/Crusader Kings II/save games/autosave.ck2'
+print 'file:', readName
+readFile=io.open(readName,'rt',1,'latin_1')
+
+from plex import *
+
+class CK2Scanner(Scanner):
+    
+    def new_key(self, text):
+#        print 'new_key:',text
+        self.names.append(text[:-1]) # save the key name
+        self.begin('value')          # and start looking for a value
+
+    def unnamed_dict(self, text):
+#        print '#:',text
+        self.names.append('#') # save a fake key name
+        self.dicts.append({})  # for this new dict (still looking for a key)
+
+    def new_dict(self, text):
+#        print '{:',text
+        self.dicts.append({}) # new dict
+        assert len(self.dicts)<50, 'too deep'
+        self.begin('')        # and start looking for a key
+
+    def new_value(self, value):
+        name=self.names.pop() # key name to add to dict
+#        print 'new_value:',value
+        d=self.dicts[-1]      # dict to add it to
+        if name in d:         # key exists?
+            if isinstance(d[name], list):
+                d[name].append(value)    # add to list
+            else:
+                d[name]=[d[name], value] # bump singular value up to list
+        else:
+            d[name]=value                # add key with singular value
+        self.begin('')        # look for next key
+    
+    def end_dict(self, text):
+        value=self.dicts.pop() # the dict we just populated
+        self.new_value(value)
+
+    def v_int(self, text):
+#        print 'int:',text
+        self.new_value(int(text.strip('"')))
+    
+    def v_float(self, text):
+#        print 'float:',text
+        self.new_value(float(text))
+    
+    def v_date(self, text):
+#        print 'date:',text
+        self.new_value([int(x) for x in text.split('.')])
+    
+    def v_date_str(self, text):
+#        print 'date_str:',text
+        self.v_date(text.strip('"'))
+
+    def v_str(self, text):
+#        print 'str:',text
+        self.new_value(text.strip('"'))
+
+    def v_int_vec(self, text):
+#        print 'int_vec:',text
+        data=dataI.findall(text.strip('{}'))
+        data=[int(x) for x in data]
+        self.new_value(data)
+    
+    def v_float_vec(self, text):
+#        print 'float_vec:',text
+        data=dataF.findall(text.strip('{}'))
+        data=[float(x) for x in data]
+        self.new_value(data)
+    
+    space = Rep1(Any(" \t\n"))
+    digit= Range('09')
+    p_int = Alt(Opt(Str('-')) + Rep1(digit), Str('"') + Opt(Str('-')) + Rep1(digit) + Str('"'))
+    p_float = Opt(Str('-')) + Rep1(digit) + Str('.') + Rep1(digit)
+    p_date = Rep1(digit) + Str('.') + Rep1(digit) + Str('.') + Rep1(digit)
+    p_date_str = Str('"') + p_date + Str('"')
+    p_bare_str = Rep1(Range('AZaz09') | Any('_-'))
+    p_str = Str('"') + Rep(AnyBut('"')) + Str('"')
+    p_int_vec = Str('{') + space + Rep1(p_int + space) + Str('}')
+    p_float_vec = Str('{') + space + Rep1(p_float + space) + Str('}')
+    assign = Alt(Rep1(Range('AZaz09') | Any('_-')), p_date) + Str('=')
+    
+    lexicon=Lexicon([
+        (space,    IGNORE),
+        (assign,   new_key),
+        (Str('{'), unnamed_dict),
+        (Str('}'), end_dict),
+        State('value', [
+            (space,       IGNORE),
+            (p_int,       v_int),
+            (p_float,     v_float),
+            (p_date,      v_date),
+            (p_date_str,  v_date_str),
+            (p_bare_str,  new_value),
+            (p_str,       v_str),
+            (p_int_vec,   v_int_vec),
+            (p_float_vec, v_float_vec),
+            (Str('{'),    new_dict)
+        ])
+    ])
+    
+    def __init__(self, file, name):
+        Scanner.__init__(self, self.lexicon, file, name)
+        self.value={'_file_': name}  # lowest level dict, will be return value
+        self.names=['guard', 'root'] # self.names[-1] is key for next value to insert 
+        self.dicts=[{}, self.value]  # self.dicts[-1] is current dict to insert to
+
+import time ####
+t1=time.clock() ####
+scanner=CK2Scanner(readFile, readName)
+b = scanner.read()
+b = scanner.value
+print 'scanned:', len(b)
+readFile.close()
+
+t2=time.clock() ####
+
 readFile=io.open(readName,'rt',1,'latin_1')
 lines=readFile.readlines()
 readFile.close()
-print 'file:', readName
-print 'lines in file:', len(lines)
+a=chain(['root=','{'], iter(lines))
 
-lines.insert(0,'root=')
-lines.insert(1,'{')
-#lines.extend('}')
-#lines.extend('}')
-#lines.extend('}')
-a=iter(lines)
-
-root=parse(a)
+root=parse(a)[1]
+root['_file_']=readName
 parse.depth-=1 ##
+root['version']=b['version']
 
-root=root[1]
+print 'scanned:', len(root)
+t3=time.clock() ####
+print t2-t1, t3-t2 ####
+
+def deep_compare(a,b,name):
+    if a!=b:
+        print name,'>',
+        if isinstance(a,(dict)):
+            a_k=set(a.keys())
+            b_k=set(b.keys())
+            if a_k!=b_k:
+                print 'diff keys:'
+                if len(a_k-b_k)<20:
+                    print 'a-b',a_k - b_k
+                if len(b_k-a_k)<20:
+                    print 'b-a',b_k - a_k
+                if len(a_k&b_k)<20:
+                    print 'a&b',a_k & b_k
+                assert False
+            for x in a_k:
+                deep_compare(a[x],b[x],x)
+        elif isinstance(a,(list)):
+            for x in a_k:
+                deep_compare(a[x],b[x],'<l>')
+        else:
+            print 'diff value:'
+            print 'a', type(a), a
+            print 'b', type(b), b
+            assert False
+
+deep_compare(root,b,'root')
+
+if qqq: ####
+    pass ####
+
 
 n='0123456789'
 
@@ -393,24 +581,23 @@ for x in spy_tech:
 # 'employer' self if any level ruler, else liege for courtier
 
 
-great_chars=[[],[],[],[],[],[],[],[],[],[],[],[],[],[],[],[],[],[],[],[],[],[],[],[],[],[],[],[],[],[],[],[]]
-greatest=0
+from collections import defaultdict
+great_chars=defaultdict(list)
 for x in live_characters:
     stats=min(int(a) for a in root['character'][x]['attributes'])
-    if stats>greatest:
-        greatest=stats
     great_chars[stats].append(x)
 print
-print "Greatest:", greatest
-print "Counts:", [len(x) for x in great_chars]
-print "Great chars:", great_chars[greatest]
+print "Greatest:", max(great_chars)
+print "Counts:"
+for x in great_chars:
+    print "\t", x, len(great_chars[x])
+print "Greatest chars:", great_chars[max(great_chars)]
 
 
 
 
 patt_int=re.compile(r"^\d+$")
 patt_fixed=re.compile(r"^\d+.\d\d\d$")
-month_days=[31,28,31,30,31,30,31,31,30,31,30,31]
 
 def is_int(str):
     return patt_int.match(str)
